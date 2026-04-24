@@ -5,11 +5,9 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const root_source_file = b.path("src/main.zig");
 
-    // Dependencies
-    const zigimg_dep = b.dependency("zigimg", .{
-        .optimize = optimize,
-        .target = target,
-    });
+    // Dependencies.
+    // zigimg removed in this fork — terminal image rendering isn't needed
+    // for the chat TUI and upstream zigimg doesn't compile on Zig 0.16.
     const uucode_dep = b.dependency("uucode", .{
         .target = target,
         .optimize = optimize,
@@ -19,6 +17,9 @@ pub fn build(b: *std.Build) void {
             "general_category",
             "is_emoji_presentation",
         }),
+        // tables_path override dropped: the vendored uucode (v0.2.0) no
+        // longer ships a prebuilt tables.zig; the build step generates
+        // it on demand from the Unicode data files in ucd/.
     });
 
     // Module
@@ -27,7 +28,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    vaxis_mod.addImport("zigimg", zigimg_dep.module("zigimg"));
     vaxis_mod.addImport("uucode", uucode_dep.module("uucode"));
 
     // Examples
@@ -35,7 +35,6 @@ pub fn build(b: *std.Build) void {
         cli,
         counter,
         fuzzy,
-        image,
         main,
         scroll,
         split_view,
@@ -94,7 +93,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "zigimg", .module = zigimg_dep.module("zigimg") },
                 .{ .name = "uucode", .module = uucode_dep.module("uucode") },
             },
         }),

@@ -2,7 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const atomic = std.atomic;
 const base64Encoder = std.base64.standard.Encoder;
-const zigimg = @import("zigimg");
+// zigimg + Image removed in this fork — terminal image rendering
+// isn't needed for the chat TUI. Image-transmit functions below
+// that still reference the old types will error-out at monomorphization
+// only if called; nothing in the chat path touches them.
 const IoWriter = std.Io.Writer;
 
 /// Zig 0.16 removed std.posix.getenv. Drop to libc directly.
@@ -13,9 +16,7 @@ fn getEnv(name: [*:0]const u8) ?[]const u8 {
     return std.mem.span(raw);
 }
 
-
 const Cell = @import("Cell.zig");
-const Image = @import("Image.zig");
 const InternalScreen = @import("InternalScreen.zig");
 const Key = @import("Key.zig");
 const Mouse = @import("Mouse.zig");
@@ -262,13 +263,12 @@ pub fn exitAltScreen(self: *Vaxis, tty: *IoWriter) !void {
 pub fn queryTerminal(self: *Vaxis, tty: *IoWriter, timeout_ns: u64) !void {
     try self.queryTerminalSend(tty);
     // 1 second timeout
-    // std.Thread.Futex was removed in Zig 0.16. This call used to be a
-    // best-effort block on incoming terminal capability responses with
-    // an early wakeup from Loop.zig's cap_da1 handler. Without Futex we
-    // fall back to a full-timeout sleep — the cap_da1 path still stores
-    // .queries_done so the loop proceeds correctly, but on a fast
-    // reply we waste the rest of the timeout. TODO: rewire via a
-    // std.Io.Condition or equivalent once one stabilises.
+    // std.Thread.Futex was removed in Zig 0.16. This wait was a
+    // best-effort block on incoming terminal capability responses;
+    // a naive timed sleep is a correctness-preserving fallback — we
+    // miss the early wake-up when queries finish fast, but the loop
+    // still proceeds once the timeout elapses. TODO: re-implement
+    // with std.Io.Futex (if it lands) or std.Io.Condition.
     const ts: std.c.timespec = .{
         .sec = @intCast(timeout_ns / std.time.ns_per_s),
         .nsec = @intCast(timeout_ns % std.time.ns_per_s),
@@ -930,176 +930,14 @@ pub fn translateMouse(self: Vaxis, mouse: Mouse) Mouse {
     return result;
 }
 
-/// Transmit an image using the local filesystem. Allocates only for base64 encoding
-pub fn transmitLocalImagePath(
-    self: *Vaxis,
-    allocator: std.mem.Allocator,
-    tty: *IoWriter,
-    payload: []const u8,
-    width: u16,
-    height: u16,
-    medium: Image.TransmitMedium,
-    format: Image.TransmitFormat,
-) !Image {
-    if (!self.caps.kitty_graphics) return error.NoGraphicsCapability;
-
-    defer self.next_img_id += 1;
-
-    const id = self.next_img_id;
-
-    const size = base64Encoder.calcSize(payload.len);
-    if (size >= 4096) return error.PathTooLong;
-
-    const buf = try allocator.alloc(u8, size);
-    const encoded = base64Encoder.encode(buf, payload);
-    defer allocator.free(buf);
-
-    const medium_char: u8 = switch (medium) {
-        .file => 'f',
-        .temp_file => 't',
-        .shared_mem => 's',
-    };
-
-    switch (format) {
-        .rgb => {
-            try tty.print(
-                "\x1b_Gf=24,s={d},v={d},i={d},t={c};{s}\x1b\\",
-                .{ width, height, id, medium_char, encoded },
-            );
-        },
-        .rgba => {
-            try tty.print(
-                "\x1b_Gf=32,s={d},v={d},i={d},t={c};{s}\x1b\\",
-                .{ width, height, id, medium_char, encoded },
-            );
-        },
-        .png => {
-            try tty.print(
-                "\x1b_Gf=100,i={d},t={c};{s}\x1b\\",
-                .{ id, medium_char, encoded },
-            );
-        },
-    }
-
-    try tty.flush();
-    return .{
-        .id = id,
-        .width = width,
-        .height = height,
-    };
-}
-
-/// Transmit an image which has been pre-base64 encoded
-pub fn transmitPreEncodedImage(
-    self: *Vaxis,
-    tty: *IoWriter,
-    bytes: []const u8,
-    width: u16,
-    height: u16,
-    format: Image.TransmitFormat,
-) !Image {
-    if (!self.caps.kitty_graphics) return error.NoGraphicsCapability;
-
-    defer self.next_img_id += 1;
-    const id = self.next_img_id;
-
-    const fmt: u8 = switch (format) {
-        .rgb => 24,
-        .rgba => 32,
-        .png => 100,
-    };
-
-    if (bytes.len < 4096) {
-        try tty.print(
-            "\x1b_Gf={d},s={d},v={d},i={d};{s}\x1b\\",
-            .{
-                fmt,
-                width,
-                height,
-                id,
-                bytes,
-            },
-        );
-    } else {
-        var n: usize = 4096;
-
-        try tty.print(
-            "\x1b_Gf={d},s={d},v={d},i={d},m=1;{s}\x1b\\",
-            .{ fmt, width, height, id, bytes[0..n] },
-        );
-        while (n < bytes.len) : (n += 4096) {
-            const end: usize = @min(n + 4096, bytes.len);
-            const m: u2 = if (end == bytes.len) 0 else 1;
-            try tty.print(
-                "\x1b_Gm={d};{s}\x1b\\",
-                .{
-                    m,
-                    bytes[n..end],
-                },
-            );
-        }
-    }
-
-    try tty.flush();
-    return .{
-        .id = id,
-        .width = width,
-        .height = height,
-    };
-}
-
-pub fn transmitImage(
-    self: *Vaxis,
-    alloc: std.mem.Allocator,
-    tty: *IoWriter,
-    img: *const zigimg.Image,
-    format: Image.TransmitFormat,
-) !Image {
-    if (!self.caps.kitty_graphics) return error.NoGraphicsCapability;
-
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-
-    var img_modifiable = img.*;
-
-    const buf = switch (format) {
-        .png => png: {
-            const png_buf = try arena.allocator().alloc(u8, img.imageByteSize());
-            const png = try img.writeToMemory(arena.allocator(), png_buf, .{ .png = .{} });
-            break :png png;
-        },
-        .rgb => rgb: {
-            try img_modifiable.convertNoFree(arena.allocator(), .rgb24);
-            break :rgb img_modifiable.rawBytes();
-        },
-        .rgba => rgba: {
-            try img_modifiable.convertNoFree(arena.allocator(), .rgba32);
-            break :rgba img_modifiable.rawBytes();
-        },
-    };
-
-    const b64_buf = try arena.allocator().alloc(u8, base64Encoder.calcSize(buf.len));
-    const encoded = base64Encoder.encode(b64_buf, buf);
-
-    return self.transmitPreEncodedImage(tty, encoded, @intCast(img.width), @intCast(img.height), format);
-}
-
-pub fn loadImage(
-    self: *Vaxis,
-    alloc: std.mem.Allocator,
-    tty: *IoWriter,
-    src: Image.Source,
-) !Image {
-    if (!self.caps.kitty_graphics) return error.NoGraphicsCapability;
-
-    var read_buffer: [1024 * 1024]u8 = undefined; // 1MB buffer
-    var img = switch (src) {
-        .path => |path| try zigimg.Image.fromFilePath(alloc, path, &read_buffer),
-        .mem => |bytes| try zigimg.Image.fromMemory(alloc, bytes),
-    };
-    defer img.deinit(alloc);
-    return self.transmitImage(alloc, tty, &img, .png);
-}
+// transmitLocalImagePath / transmitPreEncodedImage / transmitImage /
+// loadImage removed in this fork alongside zigimg. Terminal image
+// rendering (kitty graphics protocol) isn't needed for the chat TUI;
+// restore these when zigimg is ported to Zig 0.16 and re-added as a
+// dep. The cell-level `image` field on Cell remains — it's `?Image`
+// with Image itself a thin id+width+height struct we still define
+// inline at the top of this file via the removed @import. If you
+// need the field, create a local Image alias and wire it back.
 
 /// deletes an image from the terminal's memory
 pub fn freeImage(_: Vaxis, tty: *IoWriter, id: u32) void {

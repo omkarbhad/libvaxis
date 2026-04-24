@@ -8,7 +8,11 @@ pub const Vaxis = @import("Vaxis.zig");
 pub const loop = @import("Loop.zig");
 pub const Loop = loop.Loop;
 
-pub const zigimg = @import("zigimg");
+// zigimg removed from this fork: terminal image rendering (kitty graphics)
+// isn't needed for the chat TUI, and the upstream package doesn't compile
+// on Zig 0.16 due to removed @Type builtin. If image support returns,
+// restore the dep in build.zig.zon + vaxis build.zig, plus a 0.16-ported
+// zigimg fork.
 
 pub const Queue = @import("queue.zig").Queue;
 pub const Key = @import("Key.zig");
@@ -17,7 +21,8 @@ pub const Segment = Cell.Segment;
 pub const PrintOptions = Window.PrintOptions;
 pub const Style = Cell.Style;
 pub const Color = Cell.Color;
-pub const Image = @import("Image.zig");
+// Image rendering disabled in this fork alongside zigimg removal.
+// pub const Image = @import("Image.zig");
 pub const Mouse = @import("Mouse.zig");
 pub const Screen = @import("Screen.zig");
 pub const AllocatingScreen = @import("InternalScreen.zig");
